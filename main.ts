@@ -144,6 +144,26 @@ class Tree {
   get(p: string): string | null {
     return this.now.has(p) ? this.now.get(p)! : this.original(p);
   }
+  private readonly disk = new Map<string, boolean>();
+  /** Whether the path exists on disk as anything at all (a directory counts: no file can be created there). */
+  onDisk(p: string): boolean {
+    if (!this.disk.has(p)) {
+      let v = false;
+      try {
+        statSync(p);
+        v = true;
+      } catch {
+        v = false;
+      }
+      this.disk.set(p, v);
+    }
+    return this.disk.get(p)!;
+  }
+  /** Whether the path is taken in the tree as edits leave it: a staged file, a file on disk, or anything else on disk at that path. */
+  taken(p: string): boolean {
+    if (this.now.has(p)) return this.now.get(p)! !== null;
+    return this.original(p) !== null || this.onDisk(p);
+  }
 }
 
 type Edit = (tree: Tree) => void;
@@ -175,7 +195,7 @@ function jsonEdit(v: unknown): Edit | null {
     const text = o.file_text;
     return (tree) => {
       if (!safe(p)) throw new Fail('unsafe', p);
-      if (tree.get(p) !== null) throw new Fail('exists', p);
+      if (tree.taken(p)) throw new Fail('exists', p);
       tree.now.set(p, text);
     };
   }
@@ -375,7 +395,7 @@ function unifiedSectionEdit(sec: UniSection, strict: boolean): Edit {
     if (isCreate) {
       const np = newPath as string;
       if (!safe(np)) throw new Fail('unsafe', np);
-      if (tree.get(np) !== null) throw new Fail('exists', np);
+      if (tree.taken(np)) throw new Fail('exists', np);
       const plus: string[] = [];
       for (const h of sec.hunks) {
         for (const it of h.items) if (it.kind === 'add') plus.push(it.text);
@@ -407,7 +427,7 @@ function unifiedSectionEdit(sec: UniSection, strict: boolean): Edit {
       if (!safe(np)) throw new Fail('unsafe', np);
       const text = tree.get(op);
       if (text === null) throw new Fail('missing', op);
-      if (tree.get(np) !== null) throw new Fail('exists', np);
+      if (tree.taken(np)) throw new Fail('exists', np);
       const out = applyHunks(text, sec.hunks, strict, op);
       tree.now.set(op, null);
       tree.now.set(np, out);
@@ -529,7 +549,7 @@ function srEdit(path: string, oldLines: string[], newLines: string[], strict: bo
   return (tree) => {
     if (!safe(path)) throw new Fail('unsafe', path);
     if (oldLines.length === 0) {
-      if (tree.get(path) !== null) throw new Fail('exists', path);
+      if (tree.taken(path)) throw new Fail('exists', path);
       tree.now.set(path, newLines.length === 0 ? '' : newLines.join('\n') + '\n');
       return;
     }
@@ -627,7 +647,7 @@ function v4aSectionEdit(
     }
     return (tree) => {
       if (!safe(path)) throw new Fail('unsafe', path);
-      if (tree.get(path) !== null) throw new Fail('exists', path);
+      if (tree.taken(path)) throw new Fail('exists', path);
       tree.now.set(path, fileLines.length === 0 ? '' : fileLines.join('\n') + '\n');
     };
   }
@@ -676,7 +696,7 @@ function v4aSectionEdit(
     if (moveTo !== null && !safe(moveTo)) throw new Fail('unsafe', moveTo);
     const text = tree.get(path);
     if (text === null) throw new Fail('missing', path);
-    if (moveTo !== null && tree.get(moveTo) !== null) throw new Fail('exists', moveTo);
+    if (moveTo !== null && tree.taken(moveTo)) throw new Fail('exists', moveTo);
     const sf = splitFile(text);
     const curLines = [...sf.lines];
     let cursor = 0;
